@@ -3,7 +3,7 @@ import numpy as np
 from nptyping import NDArray
 from typing import List, Set, Dict, Tuple, Optional, Any, Callable
 
-supported_basis_dims = [16, 32, 48, 64, 80, 96, 112, 128]
+supported_basis_dims = [16, 32, 48, 64, 80, 96]
 
 class PartialOrthoBasis:
     def __init__(self, basis_vectors: NDArray[Any]):
@@ -31,7 +31,6 @@ def init_basis_cache():
     for bd in supported_basis_dims:
         with open(f"pcm_bases/dim_{bd}.npy", "rb") as f:
             B = np.load(f)
-            print(np.sum(B))
             basis_cache[bd] = PartialOrthoBasis(B)
 
 def get_basis(basisDim1D) -> PartialOrthoBasis:
