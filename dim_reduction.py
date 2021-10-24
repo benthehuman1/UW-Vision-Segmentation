@@ -3,7 +3,7 @@ import numpy as np
 from nptyping import NDArray
 from typing import List, Set, Dict, Tuple, Optional, Any, Callable
 
-supported_basis_dims = [16, 32, 48, 64, 80, 96]
+supported_basis_dims = [16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208]
 
 class PartialOrthoBasis:
     def __init__(self, basis_vectors: NDArray[Any]):
