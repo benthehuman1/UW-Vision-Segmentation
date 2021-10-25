@@ -35,6 +35,8 @@ get_sceneid_from_semantic_filename = lambda fname: re.findall(get_sceneid_from_s
 test_data_index: Dict[str, Dict[str, str]] = {}
 train_data_index: Dict[str, Dict[str, str]] = {}
 sceneIDs: Set[str] = set()
+trainSceneIDs: Set[str] = set()
+
 def initialize_tool():
     global test_data_index
     global train_data_index
@@ -54,6 +56,7 @@ def initialize_tool():
         is_train = "train" in vis_file_directory[sceneID]
         info = {"visualFile": vis_file_directory[sceneID], "semanticFile": sem_file_directory[sceneID]}
         if(is_train):
+            trainSceneIDs.add(sceneID)
             train_data_index[sceneID] = info
         else:
             test_data_index[sceneID] = info
@@ -79,11 +82,11 @@ def loadScene(sceneID: str) -> Tuple[NDArray[Any], NDArray[Any]]:
     return (loadVisualInfo(sceneID), loadSemanticInfo(sceneID))
 
 def loadRandomScene() -> Tuple[ str, Tuple[NDArray[Any], NDArray[Any]] ]:
-    sceneID = random.sample(sceneIDs, 1)[0]
+    sceneID = random.sample(trainSceneIDs, 1)[0]
     return (sceneID, loadScene(sceneID))
 
 def loadRandomVisualInfo() -> Tuple[str, NDArray[Any]]:
-    sceneID = random.sample(sceneIDs, 1)[0]
+    sceneID = random.sample(trainSceneIDs, 1)[0]
     return (sceneID, loadVisualInfo(sceneID))
 
 semantic_key: List[str] = [
@@ -118,3 +121,10 @@ semantic_key: List[str] = [
     "dynamic",       #28
     "static"         #29
 ]
+
+def format_semantic_composition(sem_composition: NDArray[Any]):
+    result = {}
+    for i in range(30):
+        if(sem_composition[i] > 0):
+            result[semantic_key[i]] = round(sem_composition[i], 3)
+    return result

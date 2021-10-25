@@ -250,6 +250,7 @@ class MultiScaleImageDecoder:
         return result
 
 
+
 class MultiScaleImageSampler:
     def __init__(self, scales: List[int]) -> None:
         #pre-condition: All scales are even numbers.
@@ -283,3 +284,158 @@ class MultiScaleImageSampler:
         
         return result
         
+def semantic_image_composition(semantic_img_composition: NDArray[Any]) -> NDArray[Any]:
+    v = semantic_img_composition.ravel()
+    result = np.zeros(30)
+    for i in range(30):
+        result[i] = np.sum(v == i)
+    result = result / len(v)
+    return result
+
+def numpy_mask_to_01_str(np_mask: NDArray[Any]) -> str:
+    zero_one = list(np_mask.astype(int))
+    zero_one_str = [str(x) for x in zero_one]
+    return "".join(zero_one_str)
+
+def zero_one_str_to_numpy_mask(zero_one_str: str) -> NDArray[Any]:
+    zero_one = [int(s) for s in zero_one_str]
+    return np.array(zero_one, dtype=bool)
+    
+
+class CityscapesDatasetFactory:
+    def __init__(self, dataset_id: str, scales: List[int], summarizer_options: List[ImageChunkSummarizerOptions]):
+        self.dataset_id: str = dataset_id
+        self.scales: List[int] = scales
+        self.n_scales: int = len(scales)
+        self.coreDim1d: int = self.scales[-1]
+        self.summarizer_options: List[ImageChunkSummarizerOptions] = summarizer_options
+        self.sampler: MultiScaleImageSampler = MultiScaleImageSampler(scales)
+
+        self.feature_vects: NDArray[Any] = None
+        self.scale_masks: List[NDArray[Any]] = None
+        self.feature_masks: List[Dict[str, NDArray[Any]]] = None
+        self.core_compositions: NDArray[Any] = None
+        self.sceneIDs: List[str] = None
+
+    def create_dataset(self, n_observations: int):
+        multiscale_image_samples: List[List[ImageAtScale]] = [] #n_scales x n_observations
+        for i in range(self.n_scales):
+            multiscale_image_samples.append([])
+        core_compositions = []
+        self.sceneIDs = []
+        for di in range(n_observations):
+            (sceneID, (visualImg, semanticImg)) = cityscapes_helper.loadRandomScene()
+            self.sceneIDs.append(sceneID)
+
+            visualScales = self.sampler.sample(visualImg)
+            for si in range(self.n_scales):
+                multiscale_image_samples[si].append(visualScales[si])
+
+            (coreAnchorX, coreAnchorY) = visualScales[-1].anchor #anchor is x, y
+            semanticImg_core = semanticImg[coreAnchorY:coreAnchorY+self.coreDim1d, coreAnchorX:coreAnchorX+self.coreDim1d]
+            semanticComposition = semantic_image_composition(semanticImg_core)
+            core_compositions.append(semanticComposition)
+
+        self.core_compositions = np.vstack(core_compositions)
+
+        multi_chunk_encoder = MultiScaleImageEncoder(self.summarizer_options)
+        print("about to encode")
+        self.feature_vects = multi_chunk_encoder.encode(multiscale_image_samples)
+
+        self.scale_masks = multi_chunk_encoder.scale_masks
+        self.feature_masks = [enc.feature_masks for enc in multi_chunk_encoder.encoders]
+        # multi_chunk_decoder = MultiScaleImageDecoder(scale_msk, feature_masks)
+
+    def create_config_dict(self):
+        result = {}
+        result["name"] = self.dataset_id
+        result["scale_masks"] = [numpy_mask_to_01_str(mask) for mask in self.scale_masks]
+        result["feature_masks"] = []
+        for si in range(self.n_scales):
+            #{key:value for (key,value) in dictonary.items()}
+            d = {attrID:numpy_mask_to_01_str(mask) for (attrID, mask) in self.feature_masks[si].items()}
+            result["feature_masks"].append(d)
+        result["sceneIDs"] = self.sceneIDs
+        return result
+
+    def split_feature_vects(self):
+        result = []
+        MAX_FILE_VECTS = 5000
+        n_features = self.feature_vects.shape[0]
+        n_splits = (n_features // MAX_FILE_VECTS) + 1
+        for split_i in range(n_splits):
+            feature_split = self.feature_vects[split_i*MAX_FILE_VECTS: min((split_i+1)*MAX_FILE_VECTS, n_features)]
+            print(feature_split.shape)
+            result.append(feature_split)
+        return result
+
+    def persist_dataset(self):
+        folder_path = os.path.join("datasets", self.dataset_id)
+        os.mkdir(folder_path)
+        
+        config_path = os.path.join(folder_path, "config.json")
+        with open(config_path, "w") as f:
+            json.dump(self.create_config_dict(), f)
+
+        features_folder_path = os.path.join(folder_path, "features")
+        os.mkdir(features_folder_path)
+        split_features = self.split_feature_vects()
+        n_splits = len(split_features)
+        for split_i in range(n_splits):
+            feature_file_path = os.path.join(features_folder_path, f"{str(split_i)}.npy")
+            with open(feature_file_path, "wb") as f:
+                np.save(f, split_features[split_i].astype(np.float32))
+
+        labels_path = os.path.join(folder_path, "labels.npy")
+        with open(labels_path, "wb") as f:
+            np.save(f, self.core_compositions)
+        
+
+class CityScapesDataset:
+    def __init__(self, dataset_id: str):
+        self.dataset_id: str = dataset_id
+
+        self.features: NDArray[Any] = None
+        self.labels: NDArray[Any] = None
+        self.decoder: MultiScaleImageDecoder = None
+        self.sceneIds: List[str] = None
+        self.n_scales: int = None
+
+    def load(self):
+        folder_path = os.path.join("datasets", self.dataset_id)
+        
+        config_path = os.path.join(folder_path, "config.json")
+        with open(config_path, "r") as f:
+            config = json.load(f)
+        self.sceneIds = config["sceneIDs"]
+        self.n_scales = len(config["scale_masks"])
+        scale_masks = []
+        feature_masks = []
+        for si in range(self.n_scales):
+            scale_mask = zero_one_str_to_numpy_mask(config["scale_masks"][si])
+            scale_masks.append(scale_mask)
+            #{attrID:numpy_mask_to_01_str(mask) for (attrID, mask) in self.feature_masks[si].items()}
+            feature_maskz = {attrID:zero_one_str_to_numpy_mask(mask_01_str) for (attrID, mask_01_str) in config["feature_masks"][si].items()}
+            feature_masks.append(feature_maskz)
+        self.decoder = MultiScaleImageDecoder(scale_masks, feature_masks)
+
+        labels_path = os.path.join(folder_path, "labels.npy")
+        with open(labels_path, "rb") as f:
+            self.labels = np.load(f)
+        
+        feature_folder = os.path.join(folder_path, "features")
+        feature_files = os.listdir(feature_folder)
+        feature_splits = []
+        for feature_file in feature_files:
+            print(feature_file)
+            feature_file_path = os.path.join(feature_folder, feature_file) 
+            with open(feature_file_path, "rb") as f:
+                feature_splits.append(np.load(f))
+        self.features = np.vstack(feature_splits)
+
+    def get_decoded_feature(self, feature_i):
+        return self.decoder.decode(self.features[feature_i])
+
+    def get_feature_original_image(self, feature_i):
+        sceneID = self.sceneIds[feature_i]
+        return cityscapes_helper.loadVisualInfo(sceneID)
