@@ -9,6 +9,8 @@ import dim_reduction
 from spectral_data import ImageSpectralData
 dim_reduction.init_basis_cache()
 import cityscapes_helper
+import os
+import json
 
 
 class ImageAtScale:

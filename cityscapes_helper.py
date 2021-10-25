@@ -86,3 +86,35 @@ def loadRandomVisualInfo() -> Tuple[str, NDArray[Any]]:
     sceneID = random.sample(sceneIDs, 1)[0]
     return (sceneID, loadVisualInfo(sceneID))
 
+semantic_key: List[str] = [
+    "road",          #0
+    "sidewalk",      #1
+    "parking",       #2
+    "rail track",    #3
+    "person",        #4
+    "rider",         #5
+    "car",           #6
+    "truck",         #7
+    "bus",           #8
+    "on rails",      #9
+    "motorcycle",    #10
+    "bicycle",       #11
+    "caravan",       #12
+    "trailer",       #13
+    "building",      #14
+    "wall",          #15
+    "fence",         #16
+    "guard rail",    #17
+    "bridge",        #18
+    "tunnel",        #19
+    "pole",          #20
+    "pole group",    #21
+    "traffic sign",  #22
+    "traffic light", #23
+    "vegetation",    #24
+    "terrain",       #25
+    "sky",           #26
+    "ground",        #27
+    "dynamic",       #28
+    "static"         #29
+]
