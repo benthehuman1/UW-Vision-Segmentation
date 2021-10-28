@@ -1,8 +1,9 @@
 import numpy as np
 from nptyping import NDArray
-import random
 import numpy.linalg as LA
 import matplotlib.pyplot as plt
+from PIL import Image
+import random
 from typing import List, Set, Dict, Tuple, Optional, Any, Callable
 from utils import load_image_to_arr, display_rgb, SVD2D
 import dim_reduction
@@ -12,6 +13,12 @@ import cityscapes_helper
 import os
 import json
 
+CITYSCAPES_Y = 1024
+CITYSCAPES_X = 2048
+
+def numpy_upsample_2d(A, upsample_factor):
+    A_up_x = np.repeat(A, upsample_factor).reshape((A.shape[0], A.shape[1] * upsample_factor))
+    return np.repeat(A_up_x, upsample_factor, axis=0).reshape((A_up_x.shape[0]*upsample_factor, A_up_x.shape[1]))
 
 class ImageAtScale:
     def __init__(self, imageChunk: NDArray[Any], anchor: Tuple[int, int]):
@@ -19,11 +26,35 @@ class ImageAtScale:
         self.imageSize: int = imageChunk.shape[0]
         self.anchor: Tuple[int, int] = anchor
         self.chunk_spectral_data: ImageSpectralData = None
+        self.downsample_factor: int = 1
+
+    def set_downsample_factor(self, factor: int):
+        self.downsample_factor = factor
 
     def compute_spectral_data(self):
         if(self.chunk_spectral_data is None):
-            self.chunk_spectral_data = ImageSpectralData(self.imageChunk)
+            imgCnk = self.imageChunk
+            if(self.downsample_factor > 1):
+                imCnk = Image.fromarray(self.imageChunk)
+                downsampled_dim1D = int(self.imageSize // self.downsample_factor)
+                imgCnk = np.asarray(imCnk.resize((downsampled_dim1D, downsampled_dim1D), Image.NEAREST))
+            self.chunk_spectral_data = ImageSpectralData(imgCnk)
         return self.chunk_spectral_data
+
+class WholeImage(ImageAtScale):
+    def __init__(self, image: NDArray[Any]):
+        super().__init__(image, (0, 0))
+        
+    def compute_spectral_data(self):
+        if(self.chunk_spectral_data is None):
+            imCnk = Image.fromarray(self.imageChunk)
+            downsampled_h = int(self.imageChunk.shape[0] // self.downsample_factor)
+            downsampled_w = int(self.imageChunk.shape[1] // self.downsample_factor)
+            imgCnk = np.asarray(imCnk.resize((downsampled_w, downsampled_h), Image.NEAREST))
+            self.chunk_spectral_data = ImageSpectralData(imgCnk)
+        return self.chunk_spectral_data
+
+    
 
 class ImageChunkAttributeSummarizer:
     def __init__(self, chunks: List[ImageAtScale], attribute_size: int, is_metadata: bool, description: str = "no summary", id: str = "ID"):
@@ -88,6 +119,17 @@ class ImageChunkPCACoeffSummarizer(ImageChunkAttributeSummarizer):
             B, coeff = spec_data.get_pcm_pca_coeffs(self.pc_index, self.n_coeffs)
             self.summary[i, :] = coeff
 
+class ImageChunkDownsampleFactorSummarizer(ImageChunkAttributeSummarizer):
+    def __init__(self, chunks: List[ImageAtScale], downsample_factor: int):
+        desc = f"Downsample this image chunk by {downsample_factor}"
+        summary_id = "downsample_factor"
+        super().__init__(chunks, 1, True, desc, summary_id)
+        self.downsample_factor: int = downsample_factor
+
+    def calculate_summary(self) -> NDArray[Any]:
+        for i in range(self.n_chunks):
+            self.summary[i, 0] = self.downsample_factor
+
 class ImageChunkAnchorSummarizer(ImageChunkAttributeSummarizer):
     def __init__(self, chunks: List[ImageAtScale]) -> None:
         desc = "Top-Left Coordinate of Chunk"
@@ -111,15 +153,39 @@ class ImageChunkCenterLocationSummarizer(ImageChunkAttributeSummarizer):
             self.summary[i, 0] = self.chunks[i].anchor[0] + center_offset
             self.summary[i, 1] = self.chunks[i].anchor[1] + center_offset
 
+class ImageChunkCenterLocationPolarSummarizer(ImageChunkAttributeSummarizer):
+    def __init__(self, chunks: List[ImageAtScale]):
+        desc = "Center Coordinate of Chunk in Polar corrds, reletive to the center of the image."
+        summary_id = "center_loc_polar"
+        super().__init__(chunks, 2, False, description=desc, id=summary_id)
+
+    def calculate_summary(self) -> NDArray[Any]:
+        anchor_center_offset = self.chunks[0].imageSize / 2
+        full_y_center = CITYSCAPES_Y / 2
+        full_x_center = CITYSCAPES_X / 2
+        for i in range(self.n_chunks):
+            chunk_center_x = self.chunks[i].anchor[0] + anchor_center_offset
+            chunk_center_y = self.chunks[i].anchor[1] + anchor_center_offset
+            chunk_x_center_offset = full_x_center - chunk_center_x
+            chunk_y_center_offset = full_y_center - chunk_center_y
+
+            dist = (chunk_x_center_offset**2 + chunk_y_center_offset**2) ** 0.5
+            radians = np.arctan(chunk_y_center_offset / chunk_x_center_offset)
+            self.summary[i, 0] = dist
+            self.summary[i, 1] = radians
+
+
 class ImageChunkSizeSummarizer(ImageChunkAttributeSummarizer):
     def __init__(self, chunks: List[ImageAtScale]) -> None:
-        desc = "1D size of chunk"
-        summary_id = "size1D"
-        super().__init__(chunks, 1, False, desc, summary_id)
+        desc = "2D size of chunk"
+        summary_id = "size2D"
+        super().__init__(chunks, 2, False, desc, summary_id)
 
     def calculate_summary(self):
-        size = self.chunks[0].imageSize
-        self.summary[:, :] = size
+        h = self.chunks[0].imageChunk.shape[0]
+        w = self.chunks[0].imageChunk.shape[1]
+        self.summary[:, 0] = h
+        self.summary[:, 1] = w
 
 class MultiScaleImageChunkSummarizer:
     def __init__(self):
@@ -130,8 +196,10 @@ class ImageChunkSummarizerOptions:
         self.include_mean = True
         self.included_principle_colors = [True, True, True]
         self.include_center = True
+        self.include_center_polar = True
         self.include_anchor = True
         self.n_pcm_coeffs = [100, 35, 15]
+        self.downsample_factor = 1
 
 
 class ImageChunkEncoder:
@@ -146,6 +214,7 @@ class ImageChunkEncoder:
         n_chunk_summary_features = 0
         summarizers: List[ImageChunkAttributeSummarizer] = []
         summarizers.append(ImageChunkSizeSummarizer(chunks))
+        summarizers.append(ImageChunkDownsampleFactorSummarizer(chunks, options.downsample_factor))
         if(options.include_mean):
             summarizers.append(ImageChunkMeanSummarizer(chunks))
         for pci in range(3):
@@ -157,6 +226,8 @@ class ImageChunkEncoder:
             summarizers.append(ImageChunkCenterLocationSummarizer(chunks))
         if(options.include_anchor):
             summarizers.append(ImageChunkAnchorSummarizer(chunks))
+        if(options.include_center_polar):
+            summarizers.append(ImageChunkCenterLocationPolarSummarizer(chunks))
         
         self.num_total_features = sum([s.attribute_size for s in summarizers])
         feature_index = 0
@@ -181,9 +252,14 @@ class ImageChunkDecoder:
         self.feature_masks = image_feature_masks
 
     def decode_no_location(self, feature_vec: NDArray[Any]):
-        dim1D =  int(feature_vec[self.feature_masks["size1D"]][0])
-        empty_spec_data = ImageSpectralData(None, dim1D)
-        empty_spec_data.dim1D = dim1D
+        h =  int(feature_vec[self.feature_masks["size2D"]][0])
+        w =  int(feature_vec[self.feature_masks["size2D"]][1])
+        is_square = h == w
+        downsample_factor = int(feature_vec[self.feature_masks["downsample_factor"]])
+        downsamele_h = int(h // downsample_factor)
+        downsamele_w = int(w // downsample_factor)
+        empty_spec_data = ImageSpectralData(None, (h, w))
+        empty_spec_data.dim2D = (h, w)
         empty_spec_data.mean_color = feature_vec[self.feature_masks["mean"]]
         for pci in range(3):
             pcID = f"pc_{pci}"
@@ -195,9 +271,13 @@ class ImageChunkDecoder:
                 empty_spec_data.pc_lengths[pci] = feature_vec[self.feature_masks[pclenID]]
             if(pcCoeffID in self.feature_masks):
                 coeffs = feature_vec[self.feature_masks[pcCoeffID]]
-                B = dim_reduction.get_basis(dim1D)
-                pcm = B.get_approximation_from_coeffs(coeffs).reshape((dim1D, dim1D))
-                empty_spec_data.PCMs[pci] = pcm
+                if(is_square):
+                    B = dim_reduction.get_basis(downsamele_h)
+                else:
+                    B = dim_reduction.get_whole_image_basis(pci)
+                pcm = B.get_approximation_from_coeffs(coeffs).reshape((downsamele_h, downsamele_w))
+                empty_spec_data.PCMs[pci] = numpy_upsample_2d(pcm, downsample_factor)
+        
         return empty_spec_data.get_realization()
         
 class MultiScaleImageEncoder:
@@ -211,6 +291,7 @@ class MultiScaleImageEncoder:
         num_chunks = len(scale_chunks[0])
         for i in range(self.n_scales):
             chunks = scale_chunks[i]
+            [c.set_downsample_factor(self.options[i].downsample_factor) for c in chunks]
             encoder = self.encoders[i]
             encoder.setup_summaries(chunks)
         
@@ -229,8 +310,7 @@ class MultiScaleImageEncoder:
             feature_index += num_scale_features
         return result
 
-CITYSCAPES_Y = 1024
-CITYSCAPES_X = 2048
+
 class MultiScaleImageDecoder:
     def __init__(self, scale_masks: List[NDArray[Any]], scale_feature_masks: List[Dict[str, NDArray[Any]]]):
         self.n_scales = len(scale_masks)
@@ -245,10 +325,10 @@ class MultiScaleImageDecoder:
             image_chunk_anchor = single_scale_features[single_scale_feature_mask["anchor"]].astype(int)
             single_scale_decoder = ImageChunkDecoder(single_scale_feature_mask)
             single_scale_chunk = single_scale_decoder.decode_no_location(single_scale_features)
-            dim1d = single_scale_chunk.shape[0]
-            result[image_chunk_anchor[1]:image_chunk_anchor[1]+dim1d, image_chunk_anchor[0]:image_chunk_anchor[0]+dim1d, :] = single_scale_chunk
+            h = single_scale_chunk.shape[0]
+            w = single_scale_chunk.shape[1]
+            result[image_chunk_anchor[1]:image_chunk_anchor[1]+h, image_chunk_anchor[0]:image_chunk_anchor[0]+w, :] = single_scale_chunk
         return result
-
 
 
 class MultiScaleImageSampler:
@@ -300,16 +380,20 @@ def numpy_mask_to_01_str(np_mask: NDArray[Any]) -> str:
 def zero_one_str_to_numpy_mask(zero_one_str: str) -> NDArray[Any]:
     zero_one = [int(s) for s in zero_one_str]
     return np.array(zero_one, dtype=bool)
-    
 
 class CityscapesDatasetFactory:
-    def __init__(self, dataset_id: str, scales: List[int], summarizer_options: List[ImageChunkSummarizerOptions]):
+    def __init__(self, dataset_id: str, scales: List[int], summarizer_options: List[ImageChunkSummarizerOptions], whole_image_summarizer_options: ImageChunkSummarizerOptions = None):
         self.dataset_id: str = dataset_id
         self.scales: List[int] = scales
         self.n_scales: int = len(scales)
         self.coreDim1d: int = self.scales[-1]
         self.summarizer_options: List[ImageChunkSummarizerOptions] = summarizer_options
         self.sampler: MultiScaleImageSampler = MultiScaleImageSampler(scales)
+
+        self.whole_image_summarizer_options = whole_image_summarizer_options
+        if(self.whole_image_summarizer_options is not None):
+            self.n_scales += 1
+            self.summarizer_options.insert(0, whole_image_summarizer_options)
 
         self.feature_vects: NDArray[Any] = None
         self.scale_masks: List[NDArray[Any]] = None
@@ -328,6 +412,8 @@ class CityscapesDatasetFactory:
             self.sceneIDs.append(sceneID)
 
             visualScales = self.sampler.sample(visualImg)
+            if(self.whole_image_summarizer_options is not None):
+                visualScales.insert(0, WholeImage(visualImg))
             for si in range(self.n_scales):
                 multiscale_image_samples[si].append(visualScales[si])
 
@@ -344,7 +430,7 @@ class CityscapesDatasetFactory:
 
         self.scale_masks = multi_chunk_encoder.scale_masks
         self.feature_masks = [enc.feature_masks for enc in multi_chunk_encoder.encoders]
-        # multi_chunk_decoder = MultiScaleImageDecoder(scale_msk, feature_masks)
+
 
     def create_config_dict(self):
         result = {}
@@ -365,7 +451,6 @@ class CityscapesDatasetFactory:
         n_splits = (n_features // MAX_FILE_VECTS) + 1
         for split_i in range(n_splits):
             feature_split = self.feature_vects[split_i*MAX_FILE_VECTS: min((split_i+1)*MAX_FILE_VECTS, n_features)]
-            print(feature_split.shape)
             result.append(feature_split)
         return result
 

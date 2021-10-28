@@ -32,10 +32,26 @@ def init_basis_cache():
         with open(f"pcm_bases/dim_{bd}.npy", "rb") as f:
             B = np.load(f)
             basis_cache[bd] = PartialOrthoBasis(B)
+    init_whole_image_basis_cache()
 
 def get_basis(basisDim1D) -> PartialOrthoBasis:
     if(basisDim1D not in basis_cache):
         print("REEE INvalid basis")
         return None
     return basis_cache[basisDim1D]
+
+whole_image_basis_cache: Dict[int, PartialOrthoBasis] = {}
+def init_whole_image_basis_cache():
+    global whole_image_basis_cache
+    for pcm_i in range(1, 3+1):
+        with open(f"whole_image_bases/128_256_pc{pcm_i}.npy", "rb") as f:
+            B = np.load(f)
+            whole_image_basis_cache[pcm_i-1] = PartialOrthoBasis(B)
+
+def get_whole_image_basis(pcm_i: int):
+    global whole_image_basis_cache
+    if(pcm_i not in whole_image_basis_cache):
+        print("REEE invalid whole basis")
+        return None
+    return whole_image_basis_cache[pcm_i]
 
