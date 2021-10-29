@@ -6,6 +6,7 @@ from PIL import Image
 import random
 from typing import List, Set, Dict, Tuple, Optional, Any, Callable
 from utils import load_image_to_arr, display_rgb, SVD2D
+import gc
 import dim_reduction
 from spectral_data import ImageSpectralData
 dim_reduction.init_basis_cache()
@@ -170,7 +171,10 @@ class ImageChunkCenterLocationPolarSummarizer(ImageChunkAttributeSummarizer):
             chunk_y_center_offset = full_y_center - chunk_center_y
 
             dist = (chunk_x_center_offset**2 + chunk_y_center_offset**2) ** 0.5
-            radians = np.arctan(chunk_y_center_offset / chunk_x_center_offset)
+            if(chunk_x_center_offset == 0):
+                radians = np.sign(chunk_y_center_offset) * 1.57
+            else:
+                radians = np.arctan(chunk_y_center_offset / chunk_x_center_offset)
             self.summary[i, 0] = dist
             self.summary[i, 1] = radians
 
@@ -401,35 +405,69 @@ class CityscapesDatasetFactory:
         self.core_compositions: NDArray[Any] = None
         self.sceneIDs: List[str] = None
 
+        self.batch_size = 50
+        self.samples_from_image = 10
+
     def create_dataset(self, n_observations: int):
-        multiscale_image_samples: List[List[ImageAtScale]] = [] #n_scales x n_observations
-        for i in range(self.n_scales):
-            multiscale_image_samples.append([])
-        core_compositions = []
+        #multiscale_image_samples: List[List[ImageAtScale]] = [] #n_scales x n_observations
+        #for i in range(self.n_scales):
+        #    multiscale_image_samples.append([])
+        
+        #core_compositions = []
         self.sceneIDs = []
-        for di in range(n_observations):
-            (sceneID, (visualImg, semanticImg)) = cityscapes_helper.loadRandomScene()
-            self.sceneIDs.append(sceneID)
+        n_obs_processed = 0
+        n_batches = n_observations // self.batch_size
+        while n_obs_processed < n_observations:
+            batch_index = 0
+            image_sample_index = 0
+            #for every batch
+            for batch_index in range(n_observations // self.batch_size):
+                batch_core_compositions = []
+                batch_feature_vects = []
+                batch_multi_scale_image_samples: List[List[ImageAtScale]] = [] #n_scales x batch_size
+                for i in range(self.n_scales):
+                    batch_multi_scale_image_samples.append([])
 
-            visualScales = self.sampler.sample(visualImg)
-            if(self.whole_image_summarizer_options is not None):
-                visualScales.insert(0, WholeImage(visualImg))
-            for si in range(self.n_scales):
-                multiscale_image_samples[si].append(visualScales[si])
+                #for every image in the batch
+                for images_in_batch_index in range(self.batch_size // self.samples_from_image):
+                    # load in an image
+                    (sceneID, (visualImg, semanticImg)) = cityscapes_helper.loadRandomScene()
+                    whole_image_scale = WholeImage(visualImg)
+                    for image_sample_index in range(self.samples_from_image):
+                        #sample like 10 observations from that image
+                        self.sceneIDs.append(sceneID)
+                        visualScales = self.sampler.sample(visualImg)
+                        if(self.whole_image_summarizer_options is not None):
+                            visualScales.insert(0, whole_image_scale)
+                        for si in range(self.n_scales):
+                            batch_multi_scale_image_samples[si].append(visualScales[si])
+                        (coreAnchorX, coreAnchorY) = visualScales[-1].anchor #anchor is x, y
+                        semanticImg_core = semanticImg[coreAnchorY:coreAnchorY+self.coreDim1d, coreAnchorX:coreAnchorX+self.coreDim1d]
+                        semanticComposition = semantic_image_composition(semanticImg_core)
+                        batch_core_compositions.append(semanticComposition)
+                        n_obs_processed += 1
+                
+                if(self.core_compositions is None):
+                    self.core_compositions = np.vstack(batch_core_compositions)
+                else:
+                    self.core_compositions = np.vstack([self.core_compositions, batch_core_compositions])
 
-            (coreAnchorX, coreAnchorY) = visualScales[-1].anchor #anchor is x, y
-            semanticImg_core = semanticImg[coreAnchorY:coreAnchorY+self.coreDim1d, coreAnchorX:coreAnchorX+self.coreDim1d]
-            semanticComposition = semantic_image_composition(semanticImg_core)
-            core_compositions.append(semanticComposition)
+                multi_chunk_encoder = MultiScaleImageEncoder(self.summarizer_options)
+                batch_feature_vects = multi_chunk_encoder.encode(batch_multi_scale_image_samples)
+                if(self.feature_vects is None):
+                    self.feature_vects = np.vstack(batch_feature_vects)
+                else:
+                    self.feature_vects = np.vstack([self.feature_vects, batch_feature_vects])
+                self.scale_masks = multi_chunk_encoder.scale_masks
+                self.feature_masks = [enc.feature_masks for enc in multi_chunk_encoder.encoders]
 
-        self.core_compositions = np.vstack(core_compositions)
-
-        multi_chunk_encoder = MultiScaleImageEncoder(self.summarizer_options)
-        print("about to encode")
-        self.feature_vects = multi_chunk_encoder.encode(multiscale_image_samples)
-
-        self.scale_masks = multi_chunk_encoder.scale_masks
-        self.feature_masks = [enc.feature_masks for enc in multi_chunk_encoder.encoders]
+                #free memory from the batch
+                del batch_core_compositions
+                del batch_feature_vects
+                del batch_multi_scale_image_samples
+                gc.collect()
+                
+                print(f"processed batch {batch_index + 1} of {n_batches}")
 
 
     def create_config_dict(self):
