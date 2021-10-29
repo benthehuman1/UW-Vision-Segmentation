@@ -562,3 +562,12 @@ class CityScapesDataset:
     def get_feature_original_image(self, feature_i):
         sceneID = self.sceneIds[feature_i]
         return cityscapes_helper.loadVisualInfo(sceneID)
+
+    def get_normalized_features(self):
+        features = self.features
+        feature_min = np.min(self.features, axis=0)
+        feature_max = np.max(self.features, axis=0)
+        feature_range = feature_max - feature_min
+        feature_01 = (features - feature_min) / feature_range
+        feature_neg1_to_1 = (feature_01 - 0.5) * 2
+        return feature_neg1_to_1
