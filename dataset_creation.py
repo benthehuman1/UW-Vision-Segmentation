@@ -548,6 +548,8 @@ class CityScapesDataset:
         
         feature_folder = os.path.join(folder_path, "features")
         feature_files = os.listdir(feature_folder)
+        feature_file_number = lambda ff: int(ff.split(".")[0])
+        feature_files = sorted(feature_files, key=feature_file_number)
         feature_splits = []
         for feature_file in feature_files:
             print(feature_file)
