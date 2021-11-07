@@ -342,14 +342,18 @@ class MultiScaleImageSampler:
         self.num_scales: int = len(scales)
         self.first_scale = scales[0]
 
-    def sample(self, image: NDArray[Any]) -> List[ImageAtScale]:
+    def sample(self, image: NDArray[Any], anchor: Tuple[int, int] = None) -> List[ImageAtScale]:
         imgY = image.shape[0]
         imgX = image.shape[1]
         anchors: List[Tuple[int, int]] = []
         result: List[ImageAtScale] = []
         
-        first_anchor_X = random.randint(0, imgX - self.first_scale)
-        first_anchor_Y = random.randint(0, imgY - self.first_scale)
+        if(anchor is None):
+            first_anchor_X = random.randint(0, imgX - self.first_scale)
+            first_anchor_Y = random.randint(0, imgY - self.first_scale)
+        else:
+            first_anchor_X = anchor[1]
+            first_anchor_Y = anchor[0]
         anchors.append((first_anchor_X, first_anchor_Y))
 
         for i in range(1, self.num_scales):
@@ -409,11 +413,6 @@ class CityscapesDatasetFactory:
         self.samples_from_image = 10
 
     def create_dataset(self, n_observations: int):
-        #multiscale_image_samples: List[List[ImageAtScale]] = [] #n_scales x n_observations
-        #for i in range(self.n_scales):
-        #    multiscale_image_samples.append([])
-        
-        #core_compositions = []
         self.sceneIDs = []
         n_obs_processed = 0
         n_batches = n_observations // self.batch_size
@@ -524,6 +523,9 @@ class CityScapesDataset:
         self.sceneIds: List[str] = None
         self.n_scales: int = None
 
+        self.scale_masks: List[NDArray[Any]] = []
+        self.feature_masks: List[Dict[str, NDArray[Any]]] = []
+
     def load(self):
         folder_path = os.path.join("datasets", self.dataset_id)
         
@@ -541,6 +543,8 @@ class CityScapesDataset:
             feature_maskz = {attrID:zero_one_str_to_numpy_mask(mask_01_str) for (attrID, mask_01_str) in config["feature_masks"][si].items()}
             feature_masks.append(feature_maskz)
         self.decoder = MultiScaleImageDecoder(scale_masks, feature_masks)
+        self.scale_masks = scale_masks
+        self.feature_masks = feature_masks
 
         labels_path = os.path.join(folder_path, "labels.npy")
         with open(labels_path, "rb") as f:
@@ -573,3 +577,19 @@ class CityScapesDataset:
         feature_01 = (features - feature_min) / feature_range
         feature_neg1_to_1 = (feature_01 - 0.5) * 2
         return feature_neg1_to_1
+
+    def get_feature_subset_mask(self, feature_subset: List[Tuple[int, str]]) -> NDArray[Any]:
+        # each item in feature_subset is (scale index, featureID)
+        feature_dim = self.features.shape[1]
+        result = np.zeros(feature_dim, dtype = bool)
+        for feature in feature_subset:
+            (scale_index, feature_id) = feature
+            scale_mask_start = self.scale_masks[scale_index].argmax()
+            scale_feature_mask_start = self.feature_masks[scale_index][feature_id].argmax()
+            scale_feature_len = np.sum(self.feature_masks[scale_index][feature_id])
+            full_mask_start = scale_mask_start + scale_feature_mask_start
+            result[full_mask_start:full_mask_start+scale_feature_len] = True
+        return result
+            
+
+
