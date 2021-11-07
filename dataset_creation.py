@@ -526,6 +526,10 @@ class CityScapesDataset:
         self.scale_masks: List[NDArray[Any]] = []
         self.feature_masks: List[Dict[str, NDArray[Any]]] = []
 
+        self.raw_feature_min: NDArray[Any] = None 
+        self.raw_feature_max: NDArray[Any] = None
+        self.normalized_features: NDArray[Any] = None
+
     def load(self):
         folder_path = os.path.join("datasets", self.dataset_id)
         
@@ -561,6 +565,7 @@ class CityScapesDataset:
             with open(feature_file_path, "rb") as f:
                 feature_splits.append(np.load(f))
         self.features = np.vstack(feature_splits)
+        self.compute_normalized_features()
 
     def get_decoded_feature(self, feature_i):
         return self.decoder.decode(self.features[feature_i])
@@ -568,6 +573,24 @@ class CityScapesDataset:
     def get_feature_original_image(self, feature_i):
         sceneID = self.sceneIds[feature_i]
         return cityscapes_helper.loadVisualInfo(sceneID)
+
+    def compute_normalized_features(self):
+        features = self.features
+        self.raw_feature_min = np.min(self.features, axis=0)
+        self.raw_feature_max = np.max(self.features, axis=0)
+
+        feature_range = self.raw_feature_max - self.raw_feature_min
+        feature_01 = (features - self.raw_feature_min) / feature_range
+        feature_neg1_to_1 = (feature_01 - 0.5) * 2
+        self.normalized_features = feature_neg1_to_1
+
+    def normalize_features(self, features: NDArray[Any]):
+        dataset_feature_range = self.raw_feature_max - self.raw_feature_min
+        feature_01 = (features - self.raw_feature_min) / dataset_feature_range
+        feature_neg1_to_1 = (feature_01 - 0.5) * 2
+        return feature_neg1_to_1
+
+
 
     def get_normalized_features(self):
         features = self.features
