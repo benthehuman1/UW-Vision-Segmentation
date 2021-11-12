@@ -33,6 +33,7 @@ def init_basis_cache():
             B = np.load(f)
             basis_cache[bd] = PartialOrthoBasis(B)
     init_whole_image_basis_cache()
+    has_initialized_cache = True
 
 def get_basis(basisDim1D) -> PartialOrthoBasis:
     if(basisDim1D not in basis_cache):
