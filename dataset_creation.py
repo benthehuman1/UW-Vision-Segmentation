@@ -286,13 +286,9 @@ class ImageChunkEncoder:
     def encode_summaries(self, chunks: List[ImageAtScale]):
         result = np.zeros((len(chunks), self.num_total_features))
         for summarizer in self.summarizers:
-            t0 = time.time()
             summarizer.calculate_summary()
             feature_mask = self.feature_masks[summarizer.feature_id]
             result[:, feature_mask] = summarizer.summary
-            t1 = time.time()
-            if(t1 - t0 > 0.05):
-                print(summarizer.feature_id, t1 - t0)
         return result
 
 class ImageChunkDecoder:
@@ -337,13 +333,12 @@ class MultiScaleImageEncoder:
 
     def encode(self, scale_chunks: List[List[ImageAtScale]]) -> NDArray[Any]:
         num_chunks = len(scale_chunks[0])
-        print("summary setup...")
         for i in range(self.n_scales):
             chunks = scale_chunks[i]
             [c.set_downsample_factor(self.options[i].downsample_factor) for c in chunks]
             encoder = self.encoders[i]
             encoder.setup_summaries(chunks)
-        print("summary setup done")
+
         total_feature_vec_size = sum([encoder.num_total_features for encoder in self.encoders])
         result = np.zeros((num_chunks, total_feature_vec_size))
         feature_index = 0
@@ -662,10 +657,11 @@ class CityScapesDataset:
         feature_files = sorted(feature_files, key=feature_file_number)
         feature_splits = []
         for feature_file in feature_files:
-            print(feature_file)
+            print(feature_file, end=",")
             feature_file_path = os.path.join(feature_folder, feature_file) 
             with open(feature_file_path, "rb") as f:
                 feature_splits.append(np.load(f))
+        print()
         self.features = np.vstack(feature_splits)
         self.compute_normalized_features()
 
